@@ -122,10 +122,26 @@ impl SupraClient {
             anyhow::bail!("RPC error {} fetching balance: {}", status, body);
         }
 
-        let coin_store: CoinStore = resp
+        let raw: serde_json::Value = resp
             .json()
             .await
-            .context("Failed to parse CoinStore resource JSON")?;
+            .context("Failed to parse resource JSON")?;
+
+        // The API returns { "result": [ { "coin": ... } ] }
+        let result_array = raw
+            .get("result")
+            .and_then(|r| r.as_array())
+            .context("Missing 'result' array in response")?;
+
+        if result_array.is_empty() || result_array.first().unwrap().is_null() {
+            // Unfunded accounts don't have the CoinStore resource yet.
+            return Ok(Balance { address: addr, raw: 0 });
+        }
+
+        let coin_store_json = result_array.first().unwrap();
+
+        let coin_store: CoinStore = serde_json::from_value(coin_store_json.clone())
+            .context("Failed to parse inner CoinStore object")?;
 
         let raw: u64 = coin_store
             .coin
