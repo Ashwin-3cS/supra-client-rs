@@ -1,5 +1,3 @@
-//! Example: Keypair generation + faucet + automation registry query.
-//!
 //! Demonstrates:
 //!   1. Generating a fresh Ed25519 keypair
 //!   2. Deriving the on-chain address
@@ -28,27 +26,31 @@ async fn main() -> Result<()> {
     println!("\n Requesting testnet SUPRA from faucet...");
     match client.faucet(&address).await {
         Ok(resp) => println!("  Faucet OK: {}", serde_json::to_string(&resp.extra)?),
-        Err(e)   => println!("  Faucet error (non-fatal, rate-limits apply): {}", e),
+        Err(e)   => println!("  Faucet error (non-fatal, rate-limits apply): {:?}", e),
     }
+
+    // Faucet takes a few seconds to process on testnet.
+    println!("  Waiting 5 seconds for tx to process...");
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
     // ── Step 3: Check balance ────────────────────────────────────────────────
     println!("\n Checking balance...");
     match client.get_balance(address.clone()).await {
         Ok(bal) => println!("  {}", bal),
-        Err(e)  => println!("  Not yet on-chain (new account): {}", e),
+        Err(e)  => println!("  Not yet on-chain (new account): {:?}", e),
     }
 
-    // ── Step 4: Query automation registry ────────────────────────────────────
-    println!("\n Querying automation registry...");
+    // ── Step 4: Query live supply view function ──────────────────────────────
+    println!("\n Querying SupraCoin supply view function...");
     let req = ViewRequest {
-        function: "0x1::automation_registry::get_tasks".into(),
-        type_arguments: vec![],
-        arguments: vec![serde_json::json!(address.normalise())],
+        function: "0x1::coin::supply".into(),
+        type_arguments: vec!["0x1::supra_coin::SupraCoin".into()],
+        arguments: vec![],
     };
 
     match client.view(req).await {
         Ok(result) => println!("  Tasks: {}", serde_json::to_string_pretty(&result)?),
-        Err(e)     => println!("  No tasks yet (new account): {}", e),
+        Err(e)     => println!("  No tasks yet (new account): {:?}", e),
     }
 
     println!();
