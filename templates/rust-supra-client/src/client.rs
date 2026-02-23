@@ -196,23 +196,16 @@ impl SupraClient {
 
     /// Request testnet SUPRA from the faucet.
     ///
-    /// POST {faucet_url}/faucet/v1/fund
+    /// GET {rpc_url}/rpc/v1/wallet/faucet/{address}
     pub async fn faucet(&self, addr: &AccountAddress) -> Result<FaucetResponse> {
-        // Supra testnet faucet endpoint (may vary by version).
-        let url = format!("{}/faucet/v1/fund", self.faucet_url);
-
-        let body = serde_json::json!({
-            "address": addr.normalise(),
-            "coin_type_args": "0x1::supra_coin::SupraCoin"
-        });
+        let url = format!("{}/rpc/v1/wallet/faucet/{}", self.rpc_url, addr.normalise());
 
         let resp = self
             .http
-            .post(&url)
-            .json(&body)
+            .get(&url)
             .send()
             .await
-            .with_context(|| format!("POST {}", url))?;
+            .with_context(|| format!("GET {}", url))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -220,9 +213,13 @@ impl SupraClient {
             anyhow::bail!("Faucet error {}: {}", status, body_text);
         }
 
-        let faucet_resp: FaucetResponse = resp
-            .json()
-            .await
+        // Faucet may return an empty body or simple JSON, try to parse but fallback.
+        let body_bytes = resp.bytes().await?;
+        if body_bytes.is_empty() {
+             return Ok(FaucetResponse { status: Some("OK".into()), extra: serde_json::json!({}) });
+        }
+        
+        let faucet_resp: FaucetResponse = serde_json::from_slice(&body_bytes)
             .context("Failed to parse faucet response")?;
 
         Ok(faucet_resp)
