@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
                 println!("{:<12} {:>20}  {}", label, price, decimals);
             }
             Err(e) => {
-                println!("{:<12} {:>20}  ERROR: {}", label, "-", e);
+                println!("{:<12} {:>20}  ERROR: {:?}", label, "-", e);
             }
         }
     }
