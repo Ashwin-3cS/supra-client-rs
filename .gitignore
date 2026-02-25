@@ -1,2 +1,4 @@
 target/
 .env
+
+templates/ts-check/node_modules
