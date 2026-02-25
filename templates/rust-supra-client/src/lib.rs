@@ -22,5 +22,6 @@ pub mod types;
 pub use client::SupraClient;
 pub use signing::Keypair;
 pub use types::{
-    AccountAddress, AccountInfo, Balance, FaucetResponse, TxResult, ViewRequest, ViewResponse,
+    AccountAddress, AccountInfo, Balance, EntryFunction, FaucetResponse, Identifier, ModuleId,
+    RawTransaction, TransactionPayload, TxResult, TypeTag, ViewRequest, ViewResponse,
 };
