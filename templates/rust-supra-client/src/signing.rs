@@ -6,9 +6,15 @@
 use anyhow::{Context, Result};
 use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
-use sha2::{Digest, Sha256};
+use sha3::{Digest, Sha3_256};
 
-use crate::types::AccountAddress;
+use crate::types::{
+    AccountAddress, Ed25519PublicKey, Ed25519Signature, RawTransaction, SignedTransaction,
+    TransactionAuthenticator,
+};
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const DOMAIN_SEPARATOR: &str = "SUPRA::RawTransaction";
 
 // ─── Keypair ──────────────────────────────────────────────────────────────────
 
@@ -55,10 +61,10 @@ impl Keypair {
 
     /// Derive the corresponding account address from this keypair's public key.
     ///
-    /// Supra uses SHA-256(pubkey || 0x00) truncated to 32 bytes, same as Aptos.
+    /// Supra uses SHA3-256(pubkey || 0x00) truncated to 32 bytes, same as Aptos.
     pub fn address(&self) -> AccountAddress {
         let pubkey = self.inner.verifying_key().to_bytes();
-        let mut hasher = Sha256::new();
+        let mut hasher = Sha3_256::new();
         hasher.update(pubkey);
         hasher.update([0x00u8]); // single-signer scheme byte
         let hash = hasher.finalize();
@@ -68,6 +74,36 @@ impl Keypair {
     /// Sign an arbitrary byte slice.
     pub fn sign(&self, msg: &[u8]) -> Vec<u8> {
         self.inner.sign(msg).to_bytes().to_vec()
+    }
+
+    /// Sign a RawTransaction using the standard Supra/Aptos DOMAIN_SEPARATOR.
+    pub fn sign_transaction(&self, raw: &RawTransaction) -> Result<SignedTransaction> {
+        // 1. BCS serialize the RawTx
+        let raw_bytes = bcs::to_bytes(raw).context("Failed to BCS serialize RawTransaction")?;
+
+        // 2. Hash the Domain Separator
+        let mut hasher = Sha3_256::new();
+        hasher.update(DOMAIN_SEPARATOR.as_bytes());
+        let domain_hash = hasher.finalize();
+
+        // 3. Prepend the hashed domain to the message bytes
+        let mut msg_to_sign = Vec::with_capacity(32 + raw_bytes.len());
+        msg_to_sign.extend_from_slice(&domain_hash);
+        msg_to_sign.extend_from_slice(&raw_bytes);
+
+        // 4. Sign the payload
+        let signature_bytes = self.inner.sign(&msg_to_sign).to_bytes();
+
+        let pub_key_bytes = self.inner.verifying_key().to_bytes();
+
+        // 5. Construct the SignedTransaction object
+        Ok(SignedTransaction {
+            raw_txn: raw.clone(),
+            authenticator: TransactionAuthenticator::Ed25519 {
+                public_key: Ed25519PublicKey(pub_key_bytes),
+                signature: Ed25519Signature(signature_bytes),
+            },
+        })
     }
 }
 

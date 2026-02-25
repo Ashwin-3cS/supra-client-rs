@@ -2,6 +2,7 @@
 
 use crate::types::{
     AccountAddress, AccountInfo, Balance, CoinStore, FaucetResponse, ViewRequest, ViewResponse,
+    SignedTransaction, TxResult
 };
 use anyhow::{Context, Result};
 use reqwest::Client;
@@ -223,6 +224,96 @@ impl SupraClient {
             .context("Failed to parse faucet response")?;
 
         Ok(faucet_resp)
+    }
+
+    // ─── Transactions ────────────────────────────────────────────────────────
+
+    /// Submit a signed transaction to the network.
+    ///
+    /// POST /rpc/v1/transactions/submit
+    pub async fn submit_transaction(&self, tx: &SignedTransaction) -> Result<TxResult> {
+        let url = format!("{}/rpc/v1/transactions/submit", self.rpc_url);
+
+        // The endpoint requires wrapping the transaction in a "Move" variant enum
+        let payload = serde_json::json!({
+            "Move": tx
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json") // Note: Some nodes require application/x.aptos.signed_transaction+bcs which we may support later
+            .json(&payload)
+            .send()
+            .await
+            .with_context(|| format!("POST {}", url))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Submit transaction RPC error {}: {}", status, body);
+        }
+
+        resp.json()
+            .await
+            .context("Failed to parse TxResult JSON")
+    }
+
+    /// Simulate a transaction to estimate gas and verify success without executing it.
+    ///
+    /// POST /rpc/v1/transactions/simulate
+    pub async fn dry_run_transaction(&self, tx: &SignedTransaction) -> Result<serde_json::Value> {
+        let url = format!("{}/rpc/v1/transactions/simulate", self.rpc_url);
+
+        // The endpoint requires wrapping the transaction in a "Move" variant enum
+        let payload = serde_json::json!({
+            "Move": tx
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .with_context(|| format!("POST {}", url))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Simulate transaction RPC error {}: {}", status, body);
+        }
+
+        resp.json()
+            .await
+            .context("Failed to parse simulation result JSON")
+    }
+
+    /// Wait for a transaction to hit finality by polling its hash.
+    /// Polling runs for up to ~15 seconds default.
+    pub async fn wait_for_transaction(&self, tx_hash: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/rpc/v1/transactions/by_hash/{}", self.rpc_url, tx_hash);
+        
+        let max_retries = 30;
+        let mut attempts = 0;
+
+        while attempts < max_retries {
+            let resp = self.http.get(&url).send().await;
+            
+            if let Ok(r) = resp {
+                if r.status().is_success() {
+                    let json_val: serde_json::Value = r.json().await?;
+                    // Return the payload immediately if the node has processed it
+                    return Ok(json_val);
+                }
+            }
+            
+            attempts += 1;
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
+
+        anyhow::bail!("Transaction {} not found after {} retries", tx_hash, max_retries);
     }
 
     // ─── Ledger Info ─────────────────────────────────────────────────────────

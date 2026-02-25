@@ -6,9 +6,13 @@
 //!   supra account <ADDRESS>
 //!   supra view    <ADDRESS> <MODULE> <FUNCTION> [--args <JSON>...]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use supra_rust_client::{AccountAddress, SupraClient, ViewRequest};
+use supra_rust_client::{
+    AccountAddress, SupraClient, ViewRequest, Keypair, RawTransaction, TransactionPayload,
+    EntryFunction, ModuleId, Identifier, TypeTag,
+};
+use std::str::FromStr;
 
 /// Supra Rust CLI — query balances, call view functions, and request faucet tokens.
 #[derive(Parser, Debug)]
@@ -43,6 +47,14 @@ enum Commands {
     Faucet {
         /// Account address to fund
         address: AccountAddress,
+    },
+
+    /// Transfer SUPRA to another address. Requires SUPRA_PRIVATE_KEY env var.
+    Transfer {
+        /// Recipient address (0x... hex)
+        to: AccountAddress,
+        /// Amount in RAW units (e.g. 100000000 = 1 SUPRA)
+        amount: u64,
     },
 
     /// Fetch account info (sequence number, auth key).
@@ -93,6 +105,75 @@ async fn main() -> Result<()> {
             println!("Faucet response: {}", serde_json::to_string_pretty(&resp.extra)?);
             if let Some(status) = resp.status {
                 println!("Status: {}", status);
+            }
+        }
+
+        Commands::Transfer { to, amount } => {
+            // Load keypair from env.
+            let keypair = Keypair::from_env()?;
+            let sender_addr = keypair.address();
+            println!("\nSender: {}", sender_addr);
+
+            // Fetch the sequence number for the sender
+            let account_info = client.get_account(&sender_addr).await.context("Failed to fetch sender account info. Ensure the account exists and is funded.")?;
+            
+            // Build the standard 0x1::supra_account::transfer payload
+            let payload = TransactionPayload::EntryFunction(EntryFunction {
+                module: ModuleId {
+                    address: AccountAddress::from_str("0x0000000000000000000000000000000000000000000000000000000000000001")?,
+                    name: Identifier("supra_account".into()),
+                },
+                function: Identifier("transfer".into()),
+                ty_args: vec![],
+                // BCS serialized arguments: Address, u64
+                args: vec![
+                    bcs::to_bytes(&to)?,
+                    bcs::to_bytes(&amount)?,
+                ],
+            });
+
+            // Construct the raw transaction map exactly like Aptos
+            let raw_tx = RawTransaction {
+                sender: sender_addr.clone(),
+                sequence_number: account_info.sequence_number,
+                payload,
+                max_gas_amount: 100000,
+                gas_unit_price: 100,
+                expiration_timestamp_secs: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() + 600, // 10 minutes
+                chain_id: client.chain_id,
+            };
+
+            let signed_tx = keypair.sign_transaction(&raw_tx)?;
+
+            println!("Simulating transaction...");
+            let sim_res = client.dry_run_transaction(&signed_tx).await?;
+            
+            // Basic sanity check on the simulation result (the API returns an array of length 1)
+            if let Some(arr) = sim_res.as_array() {
+                if let Some(first) = arr.first() {
+                    if let Some(success) = first.get("success").and_then(|s| s.as_bool()) {
+                        if !success {
+                           println!("Simulation failed:\n{}", serde_json::to_string_pretty(&sim_res)?);
+                           anyhow::bail!("Transaction simulation rejected by the MoveVM.");
+                        }
+                    }
+                }
+            }
+
+            println!("Simulation succeeded! Submitting transaction payload to mempool...");
+            let tx_res = client.submit_transaction(&signed_tx).await?;
+            let tx_hash = tx_res.hash.clone().unwrap_or_else(|| "unknown_hash".into());
+            println!("Transaction hash: {}", tx_hash);
+
+            println!("Waiting for consensus (max ~15 seconds)...");
+            let finality = client.wait_for_transaction(&tx_hash).await?;
+            
+            let success = finality.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
+            if success {
+                println!("\n✅ Transfer of {} units to {} completed successfully!", amount, to);
+            } else {
+                let vm_status = finality.get("vm_status").and_then(|s| s.as_str()).unwrap_or("Unknown");
+                println!("\n❌ Transaction failed on-chain. VM Status: {}", vm_status);
             }
         }
 
