@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use supra_rust_client::{
     AccountAddress, SupraClient, ViewRequest, Keypair, RawTransaction, TransactionPayload,
-    EntryFunction, ModuleId, Identifier, TypeTag,
+    EntryFunction, ModuleId, Identifier,
 };
 use std::str::FromStr;
 
@@ -168,12 +168,15 @@ async fn main() -> Result<()> {
             println!("Waiting for consensus (max ~15 seconds)...");
             let finality = client.wait_for_transaction(&tx_hash).await?;
             
-            let success = finality.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
+            let status = finality.get("status").and_then(|s| s.as_str()).unwrap_or("Unknown");
+            let success = status == "Success";
             if success {
-                println!("\n✅ Transfer of {} units to {} completed successfully!", amount, to);
+                println!("\nTransfer of {} units to {} completed successfully.", amount, to);
             } else {
-                let vm_status = finality.get("vm_status").and_then(|s| s.as_str()).unwrap_or("Unknown");
-                println!("\n❌ Transaction failed on-chain. VM Status: {}", vm_status);
+                let vm_status = finality.pointer("/output/Move/vm_status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("Unknown");
+                println!("\nTransaction failed on-chain. Status: {}, VM Status: {}", status, vm_status);
             }
         }
 

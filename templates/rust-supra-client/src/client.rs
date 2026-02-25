@@ -239,6 +239,7 @@ impl SupraClient {
             "Move": tx
         });
 
+
         let resp = self
             .http
             .post(&url)
@@ -254,9 +255,21 @@ impl SupraClient {
             anyhow::bail!("Submit transaction RPC error {}: {}", status, body);
         }
 
-        resp.json()
-            .await
-            .context("Failed to parse TxResult JSON")
+        // The submit endpoint may return either a raw hash string or a TxResult object.
+        let body = resp.text().await.context("Failed to read submit response body")?;
+        
+        // Try parsing as TxResult first, fall back to interpreting as a raw hash string
+        if let Ok(tx_result) = serde_json::from_str::<TxResult>(&body) {
+            Ok(tx_result)
+        } else {
+            // Server returned a raw string like "0xabc..."
+            let hash = body.trim().trim_matches('"').to_string();
+            Ok(TxResult {
+                hash: Some(hash),
+                success: true, // Accepted by mempool
+                vm_status: None,
+            })
+        }
     }
 
     /// Simulate a transaction to estimate gas and verify success without executing it.
@@ -266,9 +279,16 @@ impl SupraClient {
         let url = format!("{}/rpc/v1/transactions/simulate", self.rpc_url);
 
         // The endpoint requires wrapping the transaction in a "Move" variant enum
-        let payload = serde_json::json!({
+        // but with a zeroed-out signature (to signal simulation mode).
+        let mut payload = serde_json::json!({
             "Move": tx
         });
+
+        // Zero out the signature for simulation (TS SDK does this via unsetAuthenticatorSignatures)
+        let zero_sig = format!("0x{}", "0".repeat(128)); // 64 zero bytes as hex
+        if let Some(auth) = payload.pointer_mut("/Move/authenticator/Ed25519/signature") {
+            *auth = serde_json::Value::String(zero_sig);
+        }
 
         let resp = self
             .http
@@ -291,11 +311,11 @@ impl SupraClient {
     }
 
     /// Wait for a transaction to hit finality by polling its hash.
-    /// Polling runs for up to ~15 seconds default.
+    /// Polling runs for up to ~30 seconds.
     pub async fn wait_for_transaction(&self, tx_hash: &str) -> Result<serde_json::Value> {
-        let url = format!("{}/rpc/v1/transactions/by_hash/{}", self.rpc_url, tx_hash);
+        let url = format!("{}/rpc/v1/transactions/{}", self.rpc_url, tx_hash);
         
-        let max_retries = 30;
+        let max_retries = 60;
         let mut attempts = 0;
 
         while attempts < max_retries {
@@ -304,8 +324,13 @@ impl SupraClient {
             if let Ok(r) = resp {
                 if r.status().is_success() {
                     let json_val: serde_json::Value = r.json().await?;
-                    // Return the payload immediately if the node has processed it
-                    return Ok(json_val);
+                    // Check if transaction is still pending/unexecuted
+                    let status = json_val.get("status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
+                    if status != "Pending" && status != "Unexecuted" {
+                        return Ok(json_val);
+                    }
                 }
             }
             
@@ -313,7 +338,7 @@ impl SupraClient {
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
 
-        anyhow::bail!("Transaction {} not found after {} retries", tx_hash, max_retries);
+        anyhow::bail!("Transaction {} not finalized after {} retries", tx_hash, max_retries);
     }
 
     // ─── Ledger Info ─────────────────────────────────────────────────────────

@@ -48,11 +48,13 @@ impl serde::Serialize for AccountAddress {
             serializer.serialize_str(&self.normalise())
         } else {
             use serde::ser::SerializeTuple;
-            let bytes =
-                hex::decode(self.0.trim_start_matches("0x")).map_err(serde::ser::Error::custom)?;
+            // Pad to exactly 64 hex chars (32 bytes) before decoding
+            let padded = format!("{:0>64}", self.0.trim_start_matches("0x"));
+            let bytes = hex::decode(&padded).map_err(serde::ser::Error::custom)?;
+            assert_eq!(bytes.len(), 32, "AccountAddress must be exactly 32 bytes");
             let mut tup = serializer.serialize_tuple(32)?;
-            for byte in bytes {
-                tup.serialize_element(&byte)?;
+            for byte in &bytes {
+                tup.serialize_element(byte)?;
             }
             tup.end()
         }
