@@ -2,7 +2,7 @@
 
 A production-ready Rust SDK and CLI for interacting with the **Supra MoveVM testnet** (Chain ID 6).
 
-This is the Rust counterpart to Supra's TypeScript `supra-l1-sdk` — same RPC endpoints, same JSON payloads, idiomatic async Rust.
+This is the Rust counterpart to Supra's TypeScript `supra-l1-sdk` — same RPC endpoints, same JSON payloads, idiomatic async Rust. This SDK has reached **MVP (Minimum Viable Product) maturity** and is ready for integration in backend services or CLI tools!
 
 ---
 
@@ -112,10 +112,7 @@ SUPRA_PRIVATE_KEY=<your-64-hex-char-private-key>
 ## Examples
 
 ```bash
-# Oracle price feeds (BTC/USD, ETH/USD, SOL/USD)
-cargo run --example oracle_feed
-
-# Keypair generation + faucet + automation registry
+# Keypair generation + faucet + transaction submission
 cargo run --example automation
 ```
 
@@ -168,3 +165,27 @@ cargo fmt --check # format check
 ## License
 
 MIT
+
+---
+
+## SDK Status & Integration Readiness (v0.1.0 MVP)
+
+The Rust SDK is currently capable of handling the most critical flows required by developers:
+
+1. **Wallet & Key Management:** Secure generation, loading, and address derivation using Ed25519.
+2. **Read Operations:** Fetching account info, native SUPRA coin balances, and executing view functions on smart contracts.
+3. **Write Operations:** Formulating, correctly signing (`DOMAIN_SEPARATOR`), simulating (dry-run), and submitting transactions to the Supra testnet.
+4. **Tooling:** Interacting with the Faucet for automated testnet funding and awaiting transaction finality through the RPC.
+
+**Integration:** A backend service or a Rust-based tool can import this crate and use `SupraClient` to manage wallets and submit transactions exactly as they would with the TS SDK. Check `examples/automation.rs` for a full end-to-end integration flow.
+
+---
+
+## Future Roadmap
+
+To bring the Rust SDK to complete feature parity with the TS SDK, the following enhancements are planned:
+
+1. **High-Level Transaction Builders:** Currently, developers need to manually BCS-encode arguments for complex contract calls (`EntryFunction`). Adding a high-level builder (similar to the TS SDK's payload generation) will make it much easier to interact with custom smart contracts.
+2. **Extended Cryptography:** Expanding beyond Single-signer Ed25519 to support Multi-Ed25519, Secp256k1, and WebAuthn authenticators.
+3. **Gas Estimation Automation:** Wrapping the `dry_run_transaction` endpoint into an automated gas estimator that dynamically sets the `max_gas_amount` for the user before submission.
+4. **Enhanced Resource & Event Fetching:** Adding typed abstractions to fetch any on-chain resource or poll for specific on-chain events, beyond just the native `CoinStore`.
