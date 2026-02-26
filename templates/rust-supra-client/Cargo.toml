@@ -12,9 +12,6 @@ path = "src/main.rs"
 [lib]
 path = "src/lib.rs"
 
-[[example]]
-name = "oracle_feed"
-path = "examples/oracle_feed.rs"
 
 [[example]]
 name = "automation"
