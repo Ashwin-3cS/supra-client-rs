@@ -1,3 +1,5 @@
+# supra-client-rs
+
 # supra-rust-client
 
 A production-ready Rust SDK and CLI for interacting with the **Supra MoveVM testnet** (Chain ID 6).

@@ -1,4 +1,4 @@
-# Supra App
+# supra-client-rs 
 
 ## supra-rust-client
 

@@ -2,7 +2,7 @@
 //!   1. Generating a fresh Ed25519 keypair
 //!   2. Deriving the on-chain address
 //!   3. Funding via the testnet faucet
-//!   4. Querying the automation registry view function
+//!   4. Querying the supply view function
 //!
 //! Run: cargo run --example automation
 
