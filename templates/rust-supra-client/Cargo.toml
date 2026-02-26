@@ -2,7 +2,7 @@
 name = "supra-rust-client"
 version = "0.1.0"
 edition = "2021"
-description = "Rust client SDK and CLI for Supra MoveVM testnet"
+description = "An idiomatic async Rust SDK and CLI for the Supra MoveVM ecosystem, featuring wallet management and transaction submission."
 license = "MIT"
 
 [[bin]]
