@@ -1,7 +1,7 @@
 //! Async HTTP client for the Supra MoveVM RPC API.
 
 use crate::types::{
-    AccountAddress, AccountInfo, Balance, CoinStore, FaucetResponse, ViewRequest, ViewResponse,
+    AccountAddress, AccountInfo, Balance, FaucetResponse, ViewRequest, ViewResponse,
     SignedTransaction, TxResult
 };
 use anyhow::{Context, Result};
@@ -75,9 +75,9 @@ impl SupraClient {
 
     /// Fetch account metadata (sequence number, auth key).
     ///
-    /// GET /rpc/v1/accounts/{address}
+    /// GET /rpc/v3/accounts/{address}
     pub async fn get_account(&self, addr: &AccountAddress) -> Result<AccountInfo> {
-        let url = format!("{}/rpc/v1/accounts/{}", self.rpc_url, addr.normalise());
+        let url = format!("{}/rpc/v3/accounts/{}", self.rpc_url, addr.normalise());
         let resp = self
             .http
             .get(&url)
@@ -100,11 +100,11 @@ impl SupraClient {
 
     /// Fetch native SUPRA coin balance for an address.
     ///
-    /// GET /rpc/v1/accounts/{address}/resources/0x1::coin::CoinStore<0x1::supra_coin::SupraCoin>
+    /// GET /rpc/v3/accounts/{address}/resources/0x1::coin::CoinStore<0x1::supra_coin::SupraCoin>
     pub async fn get_balance(&self, addr: AccountAddress) -> Result<Balance> {
         let encoded_resource = urlencoding::encode(SUPRA_COIN_RESOURCE);
         let url = format!(
-            "{}/rpc/v1/accounts/{}/resources/{}",
+            "{}/rpc/v3/accounts/{}/resources/{}",
             self.rpc_url,
             addr.normalise(),
             encoded_resource,
@@ -128,38 +128,25 @@ impl SupraClient {
             .await
             .context("Failed to parse resource JSON")?;
 
-        // The API returns { "result": [ { "coin": ... } ] }
-        let result_array = raw
-            .get("result")
-            .and_then(|r| r.as_array())
-            .context("Missing 'result' array in response")?;
+        // v3 API returns the resource object directly:
+        // { "type": "...", "data": { "coin": { "value": "500000000" }, ... } }
+        // Unfunded accounts return 404 (caught above) or missing data.
+        let balance_str = raw
+            .pointer("/data/coin/value")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0");
 
-        if result_array.is_empty() || result_array.first().unwrap().is_null() {
-            // Unfunded accounts don't have the CoinStore resource yet.
-            return Ok(Balance { address: addr, raw: 0 });
-        }
-
-        let coin_store_json = result_array.first().unwrap();
-
-        let coin_store: CoinStore = serde_json::from_value(coin_store_json.clone())
-            .context("Failed to parse inner CoinStore object")?;
-
-        let raw: u64 = coin_store
-            .coin
-            .value
-            .parse()
-            .context("Balance value is not a valid u64")?;
-
-        Ok(Balance { address: addr, raw })
+        let balance_raw: u64 = balance_str.parse().unwrap_or(0);
+        Ok(Balance { address: addr, raw: balance_raw })
     }
 
     // ─── View ─────────────────────────────────────────────────────────────────
 
     /// Call a Move view function (read-only, no gas).
     ///
-    /// POST /rpc/v1/view
+    /// POST /rpc/v3/view
     pub async fn view(&self, req: ViewRequest) -> Result<ViewResponse> {
-        let url = format!("{}/rpc/v1/view", self.rpc_url);
+        let url = format!("{}/rpc/v3/view", self.rpc_url);
 
         let resp = self
             .http
@@ -197,9 +184,9 @@ impl SupraClient {
 
     /// Request testnet SUPRA from the faucet.
     ///
-    /// GET {rpc_url}/rpc/v1/wallet/faucet/{address}
+    /// GET {rpc_url}/rpc/v3/wallet/faucet/{address}
     pub async fn faucet(&self, addr: &AccountAddress) -> Result<FaucetResponse> {
-        let url = format!("{}/rpc/v1/wallet/faucet/{}", self.rpc_url, addr.normalise());
+        let url = format!("{}/rpc/v3/wallet/faucet/{}", self.rpc_url, addr.normalise());
 
         let resp = self
             .http
@@ -230,9 +217,9 @@ impl SupraClient {
 
     /// Submit a signed transaction to the network.
     ///
-    /// POST /rpc/v1/transactions/submit
+    /// POST /rpc/v3/transactions/submit
     pub async fn submit_transaction(&self, tx: &SignedTransaction) -> Result<TxResult> {
-        let url = format!("{}/rpc/v1/transactions/submit", self.rpc_url);
+        let url = format!("{}/rpc/v3/transactions/submit", self.rpc_url);
 
         // The endpoint requires wrapping the transaction in a "Move" variant enum
         let payload = serde_json::json!({
@@ -274,9 +261,9 @@ impl SupraClient {
 
     /// Simulate a transaction to estimate gas and verify success without executing it.
     ///
-    /// POST /rpc/v1/transactions/simulate
+    /// POST /rpc/v3/transactions/simulate
     pub async fn dry_run_transaction(&self, tx: &SignedTransaction) -> Result<serde_json::Value> {
-        let url = format!("{}/rpc/v1/transactions/simulate", self.rpc_url);
+        let url = format!("{}/rpc/v3/transactions/simulate", self.rpc_url);
 
         // The endpoint requires wrapping the transaction in a "Move" variant enum
         // but with a zeroed-out signature (to signal simulation mode).
@@ -305,15 +292,29 @@ impl SupraClient {
             anyhow::bail!("Simulate transaction RPC error {}: {}", status, body);
         }
 
-        resp.json()
+        let raw: serde_json::Value = resp
+            .json()
             .await
-            .context("Failed to parse simulation result JSON")
+            .context("Failed to parse simulation result JSON")?;
+
+        // The simulation API might return an array directly, or a `{ "result": [...] }` wrapper.
+        if let Some(arr) = raw.as_array() {
+            return Ok(serde_json::Value::Array(arr.clone()));
+        }
+        if let Some(result) = raw.get("result") {
+            if let Some(arr) = result.as_array() {
+                return Ok(serde_json::Value::Array(arr.clone()));
+            }
+        }
+        
+        // If it's something else, just return the raw value.
+        Ok(raw)
     }
 
     /// Wait for a transaction to hit finality by polling its hash.
     /// Polling runs for up to ~30 seconds.
     pub async fn wait_for_transaction(&self, tx_hash: &str) -> Result<serde_json::Value> {
-        let url = format!("{}/rpc/v1/transactions/{}", self.rpc_url, tx_hash);
+        let url = format!("{}/rpc/v3/transactions/{}", self.rpc_url, tx_hash);
         
         let max_retries = 60;
         let mut attempts = 0;
@@ -345,9 +346,9 @@ impl SupraClient {
 
     /// Fetch ledger/chain info (useful for checking connectivity).
     ///
-    /// GET /rpc/v1/
+    /// GET /rpc/v3/
     pub async fn get_ledger_info(&self) -> Result<serde_json::Value> {
-        let url = format!("{}/rpc/v1/", self.rpc_url);
+        let url = format!("{}/rpc/v3/", self.rpc_url);
         let resp = self
             .http
             .get(&url)
@@ -355,5 +356,37 @@ impl SupraClient {
             .await
             .with_context(|| format!("GET {}", url))?;
         resp.json().await.context("Failed to parse ledger info")
+    }
+
+    // ─── Gas Price ───────────────────────────────────────────────────────────
+
+    /// Fetch the current minimum gas unit price from the node.
+    ///
+    /// Mirrors the TS SDK's `getMinGasUnitPrice()` which calls
+    /// GET /rpc/v3/transactions/estimate_gas_price
+    /// and returns `min_configured_gas_price`.
+    pub async fn get_gas_price(&self) -> Result<u64> {
+        let url = format!("{}/rpc/v3/transactions/estimate_gas_price", self.rpc_url);
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {}", url))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to fetch gas price {}: {}", status, body);
+        }
+
+        let json: serde_json::Value = resp.json().await.context("Failed to parse gas price response")?;
+
+        // The response contains both `median_gas_price` and `min_configured_gas_price`.
+        // We use `min_configured_gas_price` like the TS SDK does.
+        json.get("min_configured_gas_price")
+            .and_then(|v| v.as_u64())
+            .or_else(|| json.get("median_gas_price").and_then(|v| v.as_u64()))
+            .context("Could not parse gas price from response")
     }
 }

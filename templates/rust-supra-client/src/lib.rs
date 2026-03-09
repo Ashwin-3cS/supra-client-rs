@@ -14,11 +14,13 @@
 //! }
 //! ```
 
+pub mod builder;
 pub mod client;
 pub mod signing;
 pub mod types;
 
 // Re-export the most commonly used items at the crate root.
+pub use builder::{GasEstimate, MoveArg, TxBuilder};
 pub use client::SupraClient;
 pub use signing::Keypair;
 pub use types::{
