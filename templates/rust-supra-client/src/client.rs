@@ -344,18 +344,41 @@ impl SupraClient {
 
     // ─── Ledger Info ─────────────────────────────────────────────────────────
 
-    /// Fetch ledger/chain info (useful for checking connectivity).
+    /// Fetch chain info (chain ID + current gas price).
     ///
-    /// GET /rpc/v3/
+    /// Uses the two working v3 info endpoints since `/rpc/v3/` has no root handler.
     pub async fn get_ledger_info(&self) -> Result<serde_json::Value> {
-        let url = format!("{}/rpc/v3/", self.rpc_url);
-        let resp = self
+        // Chain ID
+        let chain_id_url = format!("{}/rpc/v3/transactions/chain_id", self.rpc_url);
+        let chain_id_resp = self
             .http
-            .get(&url)
+            .get(&chain_id_url)
             .send()
             .await
-            .with_context(|| format!("GET {}", url))?;
-        resp.json().await.context("Failed to parse ledger info")
+            .with_context(|| format!("GET {}", chain_id_url))?;
+        let chain_id: serde_json::Value = chain_id_resp
+            .json()
+            .await
+            .context("Failed to parse chain_id")?;
+
+        // Gas price info
+        let gas_price_url = format!("{}/rpc/v3/transactions/estimate_gas_price", self.rpc_url);
+        let gas_price_resp = self
+            .http
+            .get(&gas_price_url)
+            .send()
+            .await
+            .with_context(|| format!("GET {}", gas_price_url))?;
+        let gas_info: serde_json::Value = gas_price_resp
+            .json()
+            .await
+            .context("Failed to parse gas price info")?;
+
+        Ok(serde_json::json!({
+            "chain_id": chain_id,
+            "rpc_url": self.rpc_url,
+            "gas_price": gas_info,
+        }))
     }
 
     // ─── Gas Price ───────────────────────────────────────────────────────────

@@ -115,13 +115,14 @@ async fn main() -> Result<()> {
 
             let builder = TxBuilder::new(&client, &keypair);
 
-            // Estimate gas first, then sign the final transaction.
-            println!("\nEstimating gas...");
-            let signed_tx = builder.transfer_with_gas_estimate(&to, amount).await?;
-            let estimate = builder.estimate_gas(&signed_tx).await?;
-            println!("  Gas used (simulated) : {}", estimate.gas_used);
-            println!("  Suggested max gas    : {}", estimate.suggested_max);
-            println!("  Gas unit price       : {}", estimate.gas_unit_price);
+            // Show live gas price
+            let gas_price = client.get_gas_price().await.unwrap_or(100_000);
+            println!("\nGas unit price : {} octas", gas_price);
+            println!("(max_gas: 10 units for existing accounts, 1020 for new ones)");
+
+            // Use the TS-SDK-aligned transfer which checks recipient existence
+            // and picks the correct max_gas cap (10 vs 1020 units).
+            let signed_tx = builder.transfer(&to, amount).await?;
 
             println!("\nSubmitting transaction...");
             let tx_res = client.submit_transaction(&signed_tx).await?;
@@ -134,6 +135,7 @@ async fn main() -> Result<()> {
             let status = finality.get("status").and_then(|s| s.as_str()).unwrap_or("Unknown");
             if status == "Success" {
                 println!("\nTransfer completed successfully!");
+                println!("Explorer: https://testnet.suprascan.io/tx/{}", tx_hash);
             } else {
                 let vm_status = finality
                     .pointer("/output/Move/vm_status")
