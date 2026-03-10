@@ -21,16 +21,6 @@ const SUPRA_COIN_RESOURCE: &str =
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Async client for Supra's JSON-RPC API.
-///
-/// # Example
-/// ```no_run
-/// # tokio_test::block_on(async {
-/// use supra_rust_client::SupraClient;
-/// let client = SupraClient::new(None, None);
-/// let balance = client.get_balance("0x1".parse().unwrap()).await.unwrap();
-/// println!("{}", balance);
-/// # });
-/// ```
 #[derive(Clone, Debug)]
 pub struct SupraClient {
     /// Underlying reqwest HTTP client.
@@ -138,6 +128,105 @@ impl SupraClient {
 
         let balance_raw: u64 = balance_str.parse().unwrap_or(0);
         Ok(Balance { address: addr, raw: balance_raw })
+    }
+
+    // ─── Generic Resources ───────────────────────────────────────────────────
+
+    /// List ALL resources held by an account (paginated).
+    ///
+    /// Mirrors TS SDK's `getAccountResources`.
+    ///
+    /// GET /rpc/v3/accounts/{address}/resources?count={limit}[&start={cursor}]
+\
+    pub async fn list_resources(
+        &self,
+        addr: &AccountAddress,
+        limit: Option<u64>,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<serde_json::Value>, Option<String>)> {
+        let count = limit.unwrap_or(15);
+        let mut url = format!(
+            "{}/rpc/v3/accounts/{}/resources?count={}",
+            self.rpc_url,
+            addr.normalise(),
+            count
+        );
+        if let Some(c) = cursor {
+            url.push_str(&format!("&start={}", c));
+        }
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {}", url))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("list_resources RPC error {}: {}", status, body);
+        }
+
+        // The cursor for the next page is in the x-supra-cursor header.
+        let next_cursor = resp
+            .headers()
+            .get("x-supra-cursor")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        let resources: Vec<serde_json::Value> = resp
+            .json()
+            .await
+            .context("Failed to parse resources JSON")?;
+
+        Ok((resources, next_cursor))
+    }
+
+    /// Fetch a single typed on-chain resource and deserialize it into `T`.
+    ///
+    /// Mirrors TS SDK's `getResourceData`.
+    ///
+    /// GET /rpc/v3/accounts/{address}/resources/{resource_type}
+
+    pub async fn get_resource<T: for<'de> serde::Deserialize<'de>>(
+        &self,
+        addr: &AccountAddress,
+        resource_type: &str,
+    ) -> Result<T> {
+        let encoded = urlencoding::encode(resource_type);
+        let url = format!(
+            "{}/rpc/v3/accounts/{}/resources/{}",
+            self.rpc_url,
+            addr.normalise(),
+            encoded,
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {}", url))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "get_resource '{}' failed {}: {}",
+                resource_type, status, body
+            );
+        }
+
+        // v3 returns { "type": "...", "data": { ... } }
+        // We deserialize just the `data` field into T.
+        let raw: serde_json::Value = resp
+            .json()
+            .await
+            .context("Failed to parse resource JSON")?;
+
+        let data = raw.get("data").cloned().unwrap_or(raw);
+        serde_json::from_value(data).context("Failed to deserialize resource into target type")
     }
 
     // ─── View ─────────────────────────────────────────────────────────────────

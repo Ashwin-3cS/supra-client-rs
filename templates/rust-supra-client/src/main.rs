@@ -1,4 +1,4 @@
-//! Supra CLI — interact with Supra MoveVM testnet from your terminal.
+//! Supra CLI — interact with Supra MoveVM testnet from terminal.
 //!
 //! Usage:
 //!   supra balance <ADDRESS>
@@ -77,6 +77,26 @@ enum Commands {
         /// JSON arguments (repeat flag for multiple)
         #[arg(long = "args", num_args = 0..)]
         args: Vec<String>,
+    },
+
+    /// List all on-chain resources for an address (mirrors TS getAccountResources).
+    Resources {
+        /// Account address (0x... hex)
+        address: AccountAddress,
+        /// Max number of resources to fetch (default: 25)
+        #[arg(long, default_value = "25")]
+        count: u64,
+        /// Pagination cursor (x-supra-cursor value from previous call)
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+
+    /// Fetch a single on-chain resource by type (mirrors TS getResourceData).
+    Resource {
+        /// Account address (0x... hex)
+        address: AccountAddress,
+        /// Fully-qualified resource type, e.g. "0x1::coin::CoinInfo<0x1::supra_coin::SupraCoin>"
+        resource_type: String,
     },
 
     /// Print chain / ledger info (connectivity check).
@@ -179,6 +199,33 @@ async fn main() -> Result<()> {
             println!("Calling view: {}", fn_str);
             let result = client.view(req).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+
+        Commands::Resources { address, count, cursor } => {
+            let cursor_str = cursor.as_deref();
+            let (resources, next_cursor) = client
+                .list_resources(&address, Some(count), cursor_str)
+                .await?;
+            println!("Account  : {}", address);
+            println!("Resources: {} returned", resources.len());
+            if let Some(nc) = next_cursor {
+                println!("Next cursor (use --cursor {}): {}", nc, nc);
+            }
+            println!();
+            for (i, r) in resources.iter().enumerate() {
+                let rtype = r["type"].as_str().unwrap_or("<unknown>");
+                println!("{:>3}. {}", i + 1, rtype);
+            }
+        }
+
+        Commands::Resource { address, resource_type } => {
+            let raw: serde_json::Value = client
+                .get_resource(&address, &resource_type)
+                .await?;
+            println!("Resource : {}", resource_type);
+            println!("Account  : {}", address);
+            println!();
+            println!("{}", serde_json::to_string_pretty(&raw)?);
         }
 
         Commands::Info => {
