@@ -58,10 +58,27 @@ cargo run -- view <MODULE_ADDR> <MODULE_NAME> <FUNCTION> \
 cargo run -- account 0x1
 ```
 
+### Transfer Tokens
+
+```bash
+# Provide private key via env var
+SUPRA_PRIVATE_KEY=<hex> cargo run -- transfer <TO_ADDRESS> 10000000
+```
+
 ### Chain info / connectivity check
 
 ```bash
 cargo run -- info
+```
+
+### Explore On-Chain Resources
+
+```bash
+# List all resource types held by an account
+cargo run -- resources 0x1 --count 10
+
+# Fetch a specific resource as JSON
+cargo run -- resource 0x1 "0x1::coin::CoinInfo<0x1::supra_coin::SupraCoin>"
 ```
 
 ---
@@ -69,24 +86,30 @@ cargo run -- info
 ## Library Usage
 
 ```rust
-use supra_rust_client::{SupraClient, AccountAddress, ViewRequest};
+use supra_rust_client::{SupraClient, AccountAddress, Keypair, builder::TxBuilder};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let client = SupraClient::new(None, None);
 
-    // Balance
+    // 1. Fetch native SUPRA balance
     let addr: AccountAddress = "0x1".parse()?;
     let balance = client.get_balance(addr).await?;
-    println!("{}", balance);     // "Balance : 0 SUPRA  (0 raw units)"
+    println!("Balance: {}", balance);
 
-    // View function
-    let result = client.view(ViewRequest {
-        function: "0x1::supra_coin::supply".into(),
-        type_arguments: vec![],
-        arguments: vec![],
-    }).await?;
-    println!("{:?}", result);
+    // 2. Fetch any generic smart contract resource
+    // let my_resource: MyStruct = client.get_resource(&addr, "0x1::my_module::MyStruct").await?;
+
+    // 3. High-level Transaction Builder (like TS SDK)
+    let keypair = Keypair::from_env()?;
+    let builder = TxBuilder::new(&client, &keypair);
+    
+    // Automatically fetches live gas price, checks recipient existence for correct gas limits, 
+    // and handles BCS serialization entirely under the hood.
+    let signed_tx = builder.transfer(&addr, 10_000_000).await?;
+    let tx_res = client.submit_transaction(&signed_tx).await?;
+    
+    println!("Submitted: {:?}", tx_res.hash);
 
     Ok(())
 }
@@ -142,6 +165,9 @@ examples/
 | `client.getAccountBalance(addr)` | `client.get_balance(addr).await?` |
 | `client.invokeViewMethod(...)` | `client.view(req).await?` |
 | `client.airdropTestSupraCoin(addr)` | `client.faucet(&addr).await?` |
+| `client.getAccountResources(addr)` | `client.list_resources(&addr, limit, cursor).await?` |
+| `client.getResourceData(addr, type)` | `client.get_resource::<T>(&addr, type).await?` |
+| `client.transferSupraCoin(...)` | `builder.transfer(&to, amount).await?` |
 
 ---
 
@@ -159,7 +185,7 @@ cargo fmt --check # format check
 
 - Explorer: https://testnet.suprascan.io
 - Faucet UI: https://faucet.supra.com
-- RPC base: `https://rpc-testnet.supra.com/rpc/v1/`
+- RPC base: `https://rpc-testnet.supra.com`
 - Chain ID: **6**
 
 ---
@@ -170,24 +196,23 @@ MIT
 
 ---
 
-## SDK Status & Integration Readiness (v0.1.0 MVP)
+## SDK Status & Integration Readiness (v0.2.0)
 
-The Rust SDK is currently capable of handling the most critical flows required by developers:
+The Rust SDK is highly mature and in exact feature-parity with the core APIs of the TS SDK:
 
 1. **Wallet & Key Management:** Secure generation, loading, and address derivation using Ed25519.
-2. **Read Operations:** Fetching account info, native SUPRA coin balances, and executing view functions on smart contracts.
-3. **Write Operations:** Formulating, correctly signing (`DOMAIN_SEPARATOR`), simulating (dry-run), and submitting transactions to the Supra testnet.
-4. **Tooling:** Interacting with the Faucet for automated testnet funding and awaiting transaction finality through the RPC.
+2. **High-Level Transaction Builder:** The `TxBuilder` abstracts away all BCS encoding, expiry calculations, and raw payload generation exactly like the official TS SDK.
+3. **Smart Gas Management:** Automatically fetches live chain `min_configured_gas_price` and correctly calibrates transfer gas limits based on recipient account existence. 
+4. **Read Operations:** Fetch account info, native balances, execute view functions, list paginated resources, and deserialize *any* generic on-chain resource (`get_resource<T>`).
+5. **Tooling:** Interacting with the Faucet for automated testnet funding and awaiting transaction finality through the RPC.
 
-**Integration:** A backend service or a Rust-based tool can import this crate and use `SupraClient` to manage wallets and submit transactions exactly as they would with the TS SDK. Check `examples/automation.rs` for a full end-to-end integration flow.
+**Integration:** A backend service or a Rust-based tool can import this crate and use `SupraClient` to manage wallets and submit transactions exactly as they would with the TS SDK. Check `examples/transfer.rs` and `examples/resources.rs` for full end-to-end integration flows.
 
 ---
 
 ## Future Roadmap
 
-To bring the Rust SDK to complete feature parity with the TS SDK, the following enhancements are planned:
+The following advanced cryptographic enhancements are planned for broader ecosystem compatibility:
 
-1. **High-Level Transaction Builders:** Currently, developers need to manually BCS-encode arguments for complex contract calls (`EntryFunction`). Adding a high-level builder (similar to the TS SDK's payload generation) will make it much easier to interact with custom smart contracts.
-2. **Extended Cryptography:** Expanding beyond Single-signer Ed25519 to support Multi-Ed25519, Secp256k1, and WebAuthn authenticators.
-3. **Gas Estimation Automation:** Wrapping the `dry_run_transaction` endpoint into an automated gas estimator that dynamically sets the `max_gas_amount` for the user before submission.
-4. **Enhanced Resource & Event Fetching:** Adding typed abstractions to fetch any on-chain resource or poll for specific on-chain events, beyond just the native `CoinStore`.
+1. **Extended Cryptography (Multi-sig):** Expanding beyond Single-signer Ed25519 to support Multi-Ed25519 threshold signers.
+2. **EVM Compatibility:** Adding support for Secp256k1 signing keys.
